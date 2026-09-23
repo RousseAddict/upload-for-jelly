@@ -1,5 +1,6 @@
 using System;
 using System.Buffers;
+using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.IO;
@@ -136,6 +137,60 @@ internal sealed class UploadWriter
         return slug.Length == 0 ? "device" : slug;
     }
 
+    // The whole no-database answer. Null means the batch was malformed and nothing was
+    // looked at; otherwise the result is the hashes no stored filename matched, in the
+    // order they were asked about.
+    //
+    // Validation runs over every key before a single directory is opened, and one bad key
+    // refuses all of them. Answering for the well-formed part of a batch would leave the
+    // client believing the rest was already stored, which is a photo silently dropped from
+    // a backup - the one failure this endpoint exists to prevent.
+    internal static IReadOnlyList<string>? Missing(string root, IReadOnlyList<HaveKey> keys)
+    {
+        var asked = new List<(string Sha, string? Month)>(keys.Count);
+
+        foreach (var key in keys)
+        {
+            // A JSON null in the array is a malformed key like any other. The element type
+            // says non-nullable; the deserializer does not keep that promise.
+            if (key is null)
+            {
+                return null;
+            }
+
+            var sha = key.Sha;
+            if (!IsSha256(sha) || !IsMonth(key.Month))
+            {
+                return null;
+            }
+
+            asked.Add((sha, string.IsNullOrEmpty(key.Month) ? null : key.Month));
+        }
+
+        var listed = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+        var missing = new List<string>();
+
+        foreach (var (sha, month) in asked)
+        {
+            // One listing per distinct month, however many keys name it. That is the entire
+            // design: at 20 000 photos over ten years a month holds a couple of hundred
+            // entries, so a 500-key batch costs a handful of directory reads and no index.
+            var bucket = month ?? UndatedDirectory;
+            if (!listed.TryGetValue(bucket, out var present))
+            {
+                present = ShortHashesIn(Bucket(root, month));
+                listed[bucket] = present;
+            }
+
+            if (!present.Contains(sha[..16]))
+            {
+                missing.Add(sha);
+            }
+        }
+
+        return missing;
+    }
+
     internal async Task<(int Status, UploadResult? Result, string? Code)> WriteAsync(
         string root,
         Stream body,
@@ -148,12 +203,7 @@ internal sealed class UploadWriter
         // Sixteen hex characters, not eight: over 20 000 files a 32-bit tag collides with
         // probability ~4.7 %, a 64-bit one with ~1e-11.
         var shortHash = sha256[..16];
-        var directory = capturedAt is null
-            ? Path.Combine(root, UndatedDirectory)
-            : Path.Combine(
-                root,
-                capturedAt.Value.ToString("yyyy", CultureInfo.InvariantCulture),
-                capturedAt.Value.ToString("yyyy-MM", CultureInfo.InvariantCulture));
+        var directory = Bucket(root, capturedAt?.ToString("yyyy-MM", CultureInfo.InvariantCulture));
 
         var existing = FindExisting(directory, shortHash);
         if (existing is not null)
@@ -215,6 +265,18 @@ internal sealed class UploadWriter
                 return (StatusCodes.Status200OK, new UploadResult(sha256, Relative(root, destination), false), null);
             }
         }
+        catch (BadHttpRequestException ex)
+        {
+            // Must precede the filesystem filter, because BadHttpRequestException derives
+            // from IOException and MaxBytes is enforced lazily inside the body read rather
+            // than up front. Diagnosed as a write failure it would answer 500 - retry with
+            // backoff, forever, for an item that can never fit - or 507 on a nearly full
+            // volume, which is terminal for the whole queue.
+            Remove(part);
+            return ex.StatusCode == StatusCodes.Status413PayloadTooLarge
+                ? (StatusCodes.Status413PayloadTooLarge, null, "TOO_LARGE")
+                : (StatusCodes.Status400BadRequest, null, "BAD_REQUEST");
+        }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             Remove(part);
@@ -236,6 +298,114 @@ internal sealed class UploadWriter
         return (StatusCodes.Status201Created, new UploadResult(sha256, Relative(root, destination), true), null);
     }
 
+    // Absent, null or empty is the undated bucket - the same place an upload goes when its
+    // capturedAt was missing or unparseable, so Have and Items agree about a photo with no
+    // capture date. Anything present must be exactly yyyy-MM with a real month number:
+    // this value becomes a directory name, and it is the only component of the path a
+    // caller chooses.
+    private static bool IsMonth(string? value)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return true;
+        }
+
+        if (value.Length != 7 || value[4] != '-')
+        {
+            return false;
+        }
+
+        for (var i = 0; i < value.Length; i++)
+        {
+            if (i != 4 && (value[i] < '0' || value[i] > '9'))
+            {
+                return false;
+            }
+        }
+
+        var month = ((value[5] - '0') * 10) + (value[6] - '0');
+        return month >= 1 && month <= 12;
+    }
+
+    // The one mapping from a month to a directory, shared by the upload and by Have. Two
+    // implementations of it would drift, and the drift would show as Have reporting every
+    // photo as missing while every re-upload answered 200 - a backup that never converges
+    // and never errors.
+    //
+    // month is either null, or seven characters IsMonth has already checked. Combined
+    // rather than concatenated, out of the two validated halves: the year is the month's
+    // own first four digits, so no part of this path is a string the caller supplied whole.
+    private static string Bucket(string root, string? month)
+    {
+        return string.IsNullOrEmpty(month)
+            ? Path.Combine(root, UndatedDirectory)
+            : Path.Combine(root, month[..4], month);
+    }
+
+    // The sixteen hex characters between the last underscore and the extension, which is
+    // where every name this plugin writes carries them, or null for a file this plugin did
+    // not write. Parsed rather than matched with a glob so that one listing answers a whole
+    // batch of keys; globbing per hash would reopen the same directory five hundred times.
+    private static string? ShortHash(string path)
+    {
+        var name = Path.GetFileName(path.AsSpan());
+        var dot = name.LastIndexOf('.');
+        if (dot < 0)
+        {
+            return null;
+        }
+
+        var stem = name[..dot];
+        if (stem.Length < 17 || stem[^17] != '_')
+        {
+            return null;
+        }
+
+        var hash = stem[^16..];
+        foreach (var c in hash)
+        {
+            if ((c < '0' || c > '9') && (c < 'a' || c > 'f'))
+            {
+                return null;
+            }
+        }
+
+        return hash.ToString();
+    }
+
+    private static HashSet<string> ShortHashesIn(string directory)
+    {
+        var hashes = new HashSet<string>(StringComparer.Ordinal);
+
+        if (!Directory.Exists(directory))
+        {
+            return hashes;
+        }
+
+        try
+        {
+            // The filesystem is the index, and this is the read side of it: the hash is in
+            // the name, so one enumeration answers for every key that named this month.
+            foreach (var path in Directory.EnumerateFiles(directory))
+            {
+                var hash = ShortHash(path);
+                if (hash is not null)
+                {
+                    hashes.Add(hash);
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // A directory that will not list is not evidence of absence, but the other
+            // answer available - claiming the photos are present - drops them from the
+            // backup with no way to notice. Reporting them missing costs one upload, which
+            // the write path then answers as an idempotent replay.
+        }
+
+        return hashes;
+    }
+
     private static string? FindExisting(string directory, string shortHash)
     {
         if (!Directory.Exists(directory))
@@ -245,9 +415,17 @@ internal sealed class UploadWriter
 
         try
         {
-            // The filesystem is the index: the hash is in the name, so one directory
-            // listing answers "do you already have this".
-            return Directory.EnumerateFiles(directory, "*_" + shortHash + ".*").FirstOrDefault();
+            // Matched through the same parse Have uses rather than a "*_<hash>.*" glob, so
+            // the two endpoints cannot come to disagree about what "already stored" means.
+            foreach (var path in Directory.EnumerateFiles(directory))
+            {
+                if (string.Equals(ShortHash(path), shortHash, StringComparison.Ordinal))
+                {
+                    return path;
+                }
+            }
+
+            return null;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {

@@ -93,7 +93,12 @@ arrived, was filed, was resolved by `heic-for-jelly` and appeared as a `Photo` i
 its EXIF date and camera intact. The error taxonomy was exercised end to end: replay `200`,
 `422` for hash mismatch / empty body / extension off the allowlist, `404` for an unknown
 target, `400` for a malformed hash, and a `../../etc` device slug that came back rebuilt as
-`etc`. Next is U4 (`Have`).
+`etc`.
+
+**U4 (`Have`) is written but not yet measured**, which is why it is not in the sentence
+above: every milestone named there means "passed on the real server", and this one has only
+compiled. What it is waiting for is the measurement the whole no-database design rests on —
+20 000 photos over ~120 months.
 
 U1 proved the only thing it was meant to: net9.0 against `Jellyfin.Controller` 10.11.6
 is the ABI this server loads, cleanly, with no controller in the assembly.

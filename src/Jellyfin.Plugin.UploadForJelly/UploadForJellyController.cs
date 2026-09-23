@@ -27,6 +27,17 @@ namespace Jellyfin.Plugin.UploadForJelly;
 [Produces(MediaTypeNames.Application.Json)]
 public class UploadForJellyController : ControllerBase
 {
+    // The contract's cap, enforced rather than trimmed. It bounds the directory listings
+    // one request can ask for, but not the allocation: the body is deserialized in full
+    // before the action runs, so the cap alone cannot stop MaxKeys being read off an
+    // already-materialised list of two hundred thousand.
+    private const int MaxKeys = 500;
+
+    // Which is what this is for. Five hundred keys of 64 hex characters and a month cost
+    // about 50 KB; the rest is headroom for whitespace. Without it Kestrel's 30 MB default
+    // applies and the refusal arrives after the heap has already taken the hit.
+    private const int MaxHaveBytes = 256 * 1024;
+
     private readonly IAuthorizationContext _authorizationContext;
     private readonly UploadTargets _targets;
     private readonly UploadWriter _writer;
@@ -97,6 +108,67 @@ public class UploadForJellyController : ControllerBase
     public ActionResult<IReadOnlyList<LibraryInfo>> GetLibraries()
     {
         return Ok(_targets.ForAdministrator());
+    }
+
+    /// <summary>
+    /// Answers which of up to five hundred photos the target library does not already hold.
+    /// </summary>
+    /// <param name="request">The target, and the hash and month of each photo.</param>
+    /// <response code="200">The subset that is missing, possibly empty.</response>
+    /// <response code="400">The body is malformed, or carries more than five hundred keys.</response>
+    /// <response code="401">No user behind the token.</response>
+    /// <response code="404">Unknown target, or one this caller may not upload into.</response>
+    /// <returns>The hashes worth uploading.</returns>
+    /// <remarks>
+    /// There is no index behind this. The hash is in the stored filename and the client
+    /// supplies the month, so the answer comes from listing one directory per distinct month
+    /// named in the batch. A key with no month asks about the undated bucket, which is where
+    /// an upload with no usable capture date is filed.
+    /// <para>
+    /// Read-only, but gated exactly like the write path: the same resolution function, hence
+    /// the same allowlist and the same per-user library visibility. Anything looser would
+    /// turn this into an oracle for the contents of a library the caller cannot open.
+    /// </para>
+    /// </remarks>
+    [HttpPost("Have")]
+    [Consumes(MediaTypeNames.Application.Json)]
+    [RequestSizeLimit(MaxHaveBytes)]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<HaveResponse>> PostHave([FromBody] HaveRequest? request)
+    {
+        var info = await _authorizationContext.GetAuthorizationInfo(HttpContext).ConfigureAwait(false);
+        if (info.User is null)
+        {
+            return Unauthorized();
+        }
+
+        var keys = request?.Keys;
+        if (keys is null
+            || keys.Count > MaxKeys
+            || !Guid.TryParse(request?.TargetId, out var id))
+        {
+            return BadRequest(new UploadError("BAD_REQUEST"));
+        }
+
+        var root = _targets.WriteRootFor(info.User, id);
+        if (root is null)
+        {
+            return NotFound(new UploadError("UNKNOWN_TARGET"));
+        }
+
+        // Missing validates every key itself and returns null rather than a partial answer,
+        // so there is no order of calls in which a request-supplied month or hash can reach
+        // the filesystem unchecked.
+        var missing = UploadWriter.Missing(root, keys);
+        if (missing is null)
+        {
+            return BadRequest(new UploadError("BAD_REQUEST"));
+        }
+
+        return new HaveResponse(missing);
     }
 
     /// <summary>

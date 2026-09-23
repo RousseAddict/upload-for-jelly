@@ -280,3 +280,89 @@ That is the enumeration behind the dashboard's library list, and now behind ours
 `Children`, not `GetChildren(user, true)` — the administrator is configuring libraries,
 not browsing them, and may not hold view permission on every one. That is the deliberate
 difference from `ForUser`, where the user-scoped enumeration *is* half the access rule (§3).
+
+## 14. Reading a request body: case-insensitive, and `string` is not a type check
+
+§2 is about output. `Have` is the first endpoint here with a body, so the input side had to
+be read too, and it behaves differently in both directions.
+
+`ApiServiceCollectionExtensions:AddJellyfinApi` ends in `.AddJsonOptions(…)`, and that
+delegate copies exactly four properties out of `JsonDefaults.PascalCaseOptions` —
+`ReadCommentHandling`, `WriteIndented`, `DefaultIgnoreCondition`, `NumberHandling` — then
+clears and refills `Converters`, then sets `PropertyNamingPolicy`. It never touches
+`PropertyNameCaseInsensitive`, and `Microsoft.AspNetCore.Mvc.JsonOptions` constructs its
+`JsonSerializerOptions` from `JsonSerializerDefaults.Web`, where that flag is `true`.
+
+So `targetId`, `TargetId` and `TARGETID` all bind to the same property. The
+`[JsonPropertyName]` attributes still go on request DTOs — they are the names the contract
+states, and renaming a C# property must not move the wire name — but on the way *in* they
+are a declaration, not a fix, which is the opposite of their role on the way out.
+
+**The trap is in the converter list.**
+`Jellyfin.Extensions/Json/Converters/JsonStringConverter.cs:Read` returns
+`reader.GetString()` for a string token and `GetRawValue(reader)` — the raw UTF-8 text of
+whatever is there — for anything else. That converter is in `JsonDefaults.Options` and is
+therefore copied into MVC's options verbatim, so it governs every `string` property on
+every plugin DTO. `{"sha": 12345}` binds as `"12345"`; `{"month": true}` binds as `"true"`.
+
+Declaring a field as `string` is consequently not a type check, and a DTO cannot be relied
+on to reject a caller who sends the wrong JSON type. Every request string in this plugin is
+validated character by character before it is allowed to form part of a path —
+`UploadWriter.IsSha256`, `IsMonth`, `Extension`, `Slug` — which is what makes this
+harmless rather than interesting.
+
+## 15. `[ApiController]`'s automatic 400 is not the contract's error body
+
+Neither `AddJellyfinApi` nor `Jellyfin.Server/Startup.cs` configures `ApiBehaviorOptions`,
+so the default `InvalidModelStateResponseFactory` stands. A body MVC cannot deserialize at
+all — malformed JSON, or the wrong shape entirely — is answered with a
+`ValidationProblemDetails` 400 before the action ever runs, not with the contract's
+`{"code":"BAD_REQUEST"}`.
+
+This is accepted rather than worked around. The lever is
+`services.Configure<ApiBehaviorOptions>`, which is **global**: a plugin that set it would
+change the error shape of every endpoint in the server to suit one of its own. And the
+status is the part the contract's taxonomy keys off (§10 there), so a client reading 400 as
+"terminal for this item, it is a client bug" behaves correctly either way.
+
+The boundary worth knowing: anything that *does* deserialize reaches the action and gets the
+contract's object — an empty `keys` array, a `keys` array of nulls, a 501-key batch, a
+`month` of `"2026-13"`. Only bytes that are not JSON escape it.
+
+There is a second, cheaper consequence of "the body is deserialized before the action runs":
+`MaxKeys` cannot bound allocation, only work. Kestrel's 30 MB default would let an
+authenticated caller materialise on the order of 200 000 `HaveKey` instances and only then
+be told `400`. `Have` therefore carries its own `[RequestSizeLimit]` — 256 KB against a real
+cost of about 50 KB — so the refusal happens before the heap does.
+
+## 16. `BadHttpRequestException` derives from `IOException`, and `[RequestSizeLimit]` is lazy
+
+Two facts that only bite together, and the pair of them made the contract's `413`
+unreachable from U3 until it was found.
+
+`Microsoft.AspNetCore.Http.BadHttpRequestException` is declared
+`public class BadHttpRequestException : IOException` (verified in `dotnet/aspnetcore`
+v9.0.0, `src/Http/Http.Abstractions/src/BadHttpRequestException.cs`), and Kestrel's own
+subclass inherits from it. Separately, `[RequestSizeLimit]` does not reject an oversize
+request up front: it sets `IHttpMaxRequestBodySizeFeature.MaxRequestBodySize`, and the
+ceiling is enforced *inside* `body.ReadAsync`.
+
+So the "request body too large" exception is raised in the middle of `DrainAsync`, where
+`UploadWriter.WriteAsync`'s own `catch (Exception ex) when (ex is IOException or
+UnauthorizedAccessException)` caught it first and ASP.NET's 413 path was never reached. The
+answer came from `Refuse`, which inspects the filesystem, finds nothing wrong, and says
+`500 WRITE_FAILED` — retryable per contract §10, forever, for an item that can never fit. On
+a volume under the 1 MiB free-space threshold the same exception yielded `507`, which is
+terminal for the **whole queue**: a client resetting a connection could stop a backup.
+
+That last case is not hypothetical. A client that hangs up mid-body raises
+`ConnectionResetException` or `BadHttpRequestException("Unexpected end of request content")`,
+both of them `IOException`, so which of `WriteAsync`'s handlers ran was a race between the
+exception and the `RequestAborted` token.
+
+Fixed by catching `BadHttpRequestException` *before* the filesystem filter and reading its
+`StatusCode`: `413` becomes `TOO_LARGE`, anything else becomes `BAD_REQUEST`. Both are
+item-terminal, which is what a body that will not arrive actually is. The ordering is the
+entire fix, and nothing warns about getting it wrong — the base type is reached through an
+exception *filter*, not a type match, so the compiler does not see a derived-after-base
+`catch` chain to complain about.

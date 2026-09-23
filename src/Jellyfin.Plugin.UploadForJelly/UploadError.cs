@@ -3,13 +3,13 @@ using System.Text.Json.Serialization;
 namespace Jellyfin.Plugin.UploadForJelly;
 
 /// <summary>
-/// The body of every refusal from the upload endpoint.
+/// The body of every refusal from the upload endpoints.
 /// </summary>
 /// <remarks>
-/// One shape for all of them, because the client's decision is driven by the code and the
-/// status together: some refusals are terminal for a single photo, others must stop the
-/// whole queue. A read-only mount that produced twenty thousand retries would be the
-/// failure this taxonomy exists to prevent.
+/// One shape for all of them, <c>Have</c> included, because the client's decision is driven
+/// by the code and the status together: some refusals are terminal for a single photo,
+/// others must stop the whole queue. A read-only mount that produced twenty thousand retries
+/// would be the failure this taxonomy exists to prevent.
 /// </remarks>
 public class UploadError
 {

@@ -52,9 +52,22 @@ folder it would write to and a live write probe, and ticking one is the whole se
 Proves `IHasWebPages`, the embedded resource path, and the elevation-gated
 `GET /Libraries` the page reads.
 
-**U4 — `Have`.** Batch deduplication, 500 keys per request against a directory
-enumeration. Pairs with the app's W4/W6. Measure it at 20 000 photos over ~120 months —
-the whole no-database design rests on that shape being cheap.
+**U4 — `Have`.** Written, not yet measured on the server. Batch deduplication, up to 500
+`{sha, month}` keys per request, answered by listing **one directory per distinct month
+named in the batch** and matching the sixteen hex characters the filename carries. A key
+with no month asks about `undated/`, the bucket an upload lands in when its `capturedAt`
+is missing or unparseable. The whole batch is validated before a single directory is
+opened and one malformed key refuses all of it, because answering for the well-formed part
+would leave the client believing the rest was stored — a photo dropped from a backup with
+nothing to notice.
+
+The month-to-directory mapping and the filename-to-hash parse are now single functions
+shared with `Items`, and that is the point rather than tidiness: two copies would drift,
+and the drift would show as `Have` reporting every photo as missing while every re-upload
+answered `200`. A backup that never converges and never errors.
+
+Pairs with the app's W4/W6. Still to measure at 20 000 photos over ~120 months — the whole
+no-database design rests on that shape being cheap.
 
 **U5 — hardening, and only then 1.0.0.0.** The error taxonomy exercised end to end
 (read-only mount, full disk, hash mismatch, oversize body, unknown target), concurrent
@@ -104,6 +117,24 @@ The staging directory's two ignore mechanisms were re-read and hold as contract 
   `Policies.RequiresElevation`. Had the page been generated server-side with the libraries
   baked in, as the obvious implementation would, it would have published the host's
   directory layout anonymously.
+
+## 3d. What the sources said before U4
+
+`docs/02` §14–§15, and both are about the *request* side of JSON, which §2 never covered
+because no endpoint had a body until now:
+
+- **A body binds case-insensitively, but `string` is not a type check.** `AddJellyfinApi`
+  copies four properties out of `JsonDefaults.PascalCaseOptions` and leaves
+  `PropertyNameCaseInsensitive` at MVC's web default of `true`. It also copies the whole
+  converter list, which contains `JsonStringConverter` — that one returns the raw token text
+  for anything that is not a string, so `{"sha": 12345}` binds as `"12345"` instead of
+  failing. Every request string here is therefore validated character by character before it
+  can reach a path.
+- **`[ApiController]`'s automatic 400 is not the contract's error body**, and a plugin cannot
+  change that: `ApiBehaviorOptions` is global. A body MVC cannot deserialize at all gets
+  `ValidationProblemDetails`; anything that does deserialize reaches the action and gets
+  `{"code":"BAD_REQUEST"}`. The status is the part the error taxonomy keys off, so this is
+  survivable, but it is the one place the wire shape is not ours.
 
 ## 4. Risks
 
