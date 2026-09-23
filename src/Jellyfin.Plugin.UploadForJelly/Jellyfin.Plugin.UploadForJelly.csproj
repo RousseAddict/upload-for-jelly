@@ -1,0 +1,58 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!--
+      net9.0, not net8.0: Jellyfin 10.11 moved to .NET 9. The server's
+      jellyfin.runtimeconfig.json declares tfm net9.0 with runtime 9.0.12, and
+      Jellyfin.Controller 10.11.6 ships no net8.0 asset at all.
+    -->
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <RootNamespace>Jellyfin.Plugin.UploadForJelly</RootNamespace>
+    <!-- Must stay in step with the "version" field of meta.json, which is what the
+         dashboard displays and what Jellyfin compares on upgrade. The release
+         workflow refuses to publish if the two disagree. -->
+    <AssemblyVersion>0.1.0.0</AssemblyVersion>
+    <FileVersion>0.1.0.0</FileVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      Pinned exactly, not floated. A plugin links against one Jellyfin.Controller
+      ABI and any 10.x minor can break it. 10.11.6 is the server's own version.
+    -->
+    <!--
+      ExcludeAssets=runtime keeps Jellyfin's own assemblies out of bin/. The server
+      already has them loaded, and a plugin that ships a second copy fails to
+      register - the types in the zip are not the types the host resolved. Model is
+      listed only so that its runtime assets are excluded too; ExcludeAssets does
+      not reach transitive packages.
+    -->
+    <PackageReference Include="Jellyfin.Controller" Version="10.11.6">
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </PackageReference>
+    <PackageReference Include="Jellyfin.Model" Version="10.11.6">
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </PackageReference>
+    <PackageReference Include="StyleCop.Analyzers" Version="1.2.0-beta.556" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      Embedded, not copied beside the dll: DashboardController serves the page with
+      Assembly.GetManifestResourceStream, and the release zip holds the dll and
+      meta.json only. The resource name is RootNamespace + the path with separators
+      as dots, which is what Plugin.GetPages builds.
+    -->
+    <EmbeddedResource Include="Configuration/configPage.html" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <AdditionalFiles Include="$(MSBuildThisFileDirectory)../../stylecop.json" Link="stylecop.json" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,282 @@
+# 02 — Verified Jellyfin internals
+
+Read in the sources at tag **v10.11.0**, cited `file:symbol`. Nothing here comes from
+documentation or search results. Several findings invert the obvious design; the ones
+that would have shipped as silent bugs are marked **trap**.
+
+## 1. A plugin controller is routed, with no prefix
+
+`Emby.Server.Implementations/ApplicationHost.cs:GetApiPluginAssemblies` selects every
+loaded assembly containing a concrete `ControllerBase` and yields it;
+`Jellyfin.Server/Extensions/ApiServiceCollectionExtensions.cs:AddJellyfinApi` clears the
+application parts, adds the API assembly, then `AddApplicationPart` for each of those.
+
+So a plugin controller is ordinary MVC attribute routing. There is no implicit prefix:
+`Jellyfin.Api/BaseJellyfinApiController.cs` carries `[Route("[controller]")]`, and
+controllers that want another path override it (`UserViewsController` declares
+`[Route("")]`, which is why `/UserViews` is at the root). Ours declares
+`[Route("UploadForJelly")]`, and that is the whole path.
+
+Deriving from `ControllerBase` rather than `BaseJellyfinApiController` is deliberate:
+the latter lives in `Jellyfin.Api`, which is not a package a plugin references.
+
+## 2. Trap: `application/json` gets **PascalCase**
+
+`AddJellyfinApi` inserts two output formatters. `PascalCaseJsonProfileFormatter` claims
+both `application/json; profile="PascalCase"` **and plain `application/json`**;
+`CamelCaseJsonProfileFormatter` claims only its own profile media type.
+`Jellyfin.Extensions/Json/JsonDefaults.cs` gives the Pascal options
+`PropertyNamingPolicy = null`.
+
+A client sending `Accept: application/json` — which is what the app sends — therefore
+receives `{"Targets":[{"Id":…}]}`, not the camelCase the contract specifies. The app
+would have decoded nothing, reported *incompatible*, and greyed its own control with
+"Update the upload plugin on your server", which is a perfect description of the wrong
+problem.
+
+Fix: **every DTO property carries `[JsonPropertyName]`.** An explicit name beats the
+naming policy, so the wire shape is the same under both formatters and cannot be
+changed by an `Accept` header.
+
+## 3. Ids are dashless, and the id from `/UserViews` is the collection folder
+
+`Jellyfin.Extensions/Json/Converters/JsonGuidConverter.cs:WriteInternal` writes
+`value.ToString("N")`. Every id a client has ever seen is 32 hex characters with no
+dashes, so `TargetInfo.Id` is formatted the same way. A dashed id would simply never
+match on the client, silently.
+
+`Emby.Server.Implementations/Library/UserViewManager.cs:GetUserViews` returns a
+`UserView` — a different id from the library's — in three cases: `UserView.IsUserSpecific`
+(playlists, or `ISupportsUserSpecificView`), grouped folders (only `movies`, `tvshows`
+and untyped are eligible, per `UserView.IsEligibleForGrouping`), and
+`query.PresetViews.Contains(type)`. `UserViewQuery`'s constructor defaults `PresetViews`
+to empty and `UserViewsController.GetUserViews` only fills it when the caller asks.
+
+For a `photos` or `homevideos` library, with a client that does not pass `presetViews`,
+none of the three applies: the method falls through to `list.Add(folder)` and hands back
+the `CollectionFolder` itself. **The id the app stored is the id we match.** No
+resolution step is needed, and the contract does not change.
+
+`UploadTargets.ForUser` walks that same
+`GetUserRootFolder().GetChildren(user, true)` enumeration on purpose — matching ids by
+construction, and inheriting the user's own library permissions.
+
+## 4. Trap: `PhysicalLocations[0]` **is** the virtual folder
+
+`MediaBrowser.Controller/Entities/CollectionFolder.cs` exposes both `Path` and
+`PhysicalLocations`. `Path` is the *virtual folder* inside Jellyfin's configuration
+directory — `GetLibraryOptionsPath(Path)` puts `options.xml` beside it — and it holds the
+library's `.mblink` shortcuts, not its media.
+
+The part that matters, and that an earlier version of this section got wrong:
+**`PhysicalLocations` is not the complement of `Path`, it is a superset of it.**
+`CollectionFolder.CreateResolveArgs` assigns `PhysicalLocationsList = args.PhysicalLocations`,
+and `ItemResolveArgs.PhysicalLocations` is literally `[Path, ...AdditionalLocations]`. The
+additional entries are the resolved shortcut targets —
+`FileData.GetFilteredFileSystemEntries` calls `args.AddAdditionalLocation(newPath)` with the
+expanded `.mblink` destination. So the *first* element is always the config directory and
+only the rest is media.
+
+That is why `CollectionFolder.GetPhysicalFolders` filters with
+`PhysicalLocations.Where(i => !FileSystem.AreEqual(i, Path))`. This section previously cited
+that filter as *evidence that the two differ*; it is in fact the required step, and reading
+it as evidence is how `WriteRoot` shipped as "the first entry that exists" — which returns
+the config directory on every server in the world.
+
+**It failed silently and looked like success.** The config directory is perfectly writable,
+so the create-and-delete probe passed and `Targets` reported `writable: true`. The upload
+returned `201`, and the relative path in that response (`2026/2026-09/…`) looks correct
+because it is relative to a root the client never sees. Photos were being filed into
+`/config/root/default/<Library>/`, where no scan reaches them. What exposed it was
+`GET /Libraries` — the only endpoint that returns an absolute path, added for an unrelated
+reason.
+
+`UploadTargets.WriteRoot` now skips the entry equal to `folder.Path` and returns the first
+remaining one that exists. It uses the injected `IFileSystem.AreEqual` rather than a string
+comparison, so case sensitivity is the host's decision and not a guess about the volume.
+
+Open, and a contract question rather than a code one: a library with several physical
+folders. v1 takes the first existing one.
+
+## 4b. `capturedAt` chooses the folder and nothing else — measured
+
+Uploading a real iPhone HEIC with `capturedAt=2026-09-23T15:02:00-04:00` filed it at
+`2026/2026-09/20260923-150200_…heic` and produced an item whose `PremiereDate` is
+`2023-02-19T15:01:42Z`, read out of the file's own EXIF, with `Width`/`Height` and camera
+fields to match. The plugin never writes metadata into the bytes it stores, so the folder
+name and the item's date come from two independent sources and are *expected* to disagree.
+
+The consequence worth stating: **the reader sorts on `PremiereDate`, so the folder layout
+has no effect on where a photo appears in the app.** The layout exists for humans browsing
+the filesystem and for `Have`'s single-directory enumeration (contract §6), not for
+ordering. A file whose EXIF carries no capture date will be undated in the app however
+precisely `capturedAt` placed it — acceptable because iPhone originals always carry one,
+and screenshots are out of scope.
+
+## 5. Authorisation available to a plugin
+
+- `[Authorize]` with no policy uses the default built in
+  `ApiServiceCollectionExtensions.AddJellyfinApiAuthorization`:
+  `AddAuthenticationSchemes(AuthenticationSchemes.CustomAuthentication)` plus
+  `DefaultAuthorizationRequirement`. That is the scheme that parses
+  `Authorization: MediaBrowser Token="…"`, so the app's existing header is enough and no
+  named policy is needed.
+- Named policies are in `MediaBrowser.Common/Api/Policies.cs`, reachable from a plugin.
+  `Jellyfin.Api/Constants` and `Jellyfin.Api/Extensions/ClaimsPrincipalExtensions.cs`
+  are **not** — a plugin cannot call `User.GetUserId()`.
+- The way in is `MediaBrowser.Controller/Net/IAuthorizationContext.cs`:
+  `GetAuthorizationInfo(HttpContext)` yields an `AuthorizationInfo` whose `User` is the
+  entity. It is null for an API key (`IsApiKey`), which is why `Targets` answers 401
+  there: every rule in this plugin is defined per user.
+
+## 6. No free-space API in `IFileSystem`
+
+`MediaBrowser.Model/IO/IFileSystem.cs` has no `GetFreeSpace`, no `CanWrite`, no
+`IsWritable` — confirming contract §3 from the other side. `freeBytes` comes from
+`DriveInfo.GetDrives()` with a longest-mount-point match; `new DriveInfo(root)` would
+answer for `/`, which on a server is never the volume the media sits on.
+
+The read-only verdict comes from `/proc/self/mounts`, also by longest match, rather than
+from the exception: whether EROFS surfaces as `UnauthorizedAccessException` or
+`IOException` is a .NET errno-mapping detail, not a contract to hang a user-visible
+sentence on. Where there is no `/proc`, the probe says `PERMISSION_DENIED` or
+`WRITE_FAILED` rather than claiming a mount flag it cannot see.
+
+## 7. Trap: the "I am writing this myself" pair hides the file for 45 seconds
+
+`Emby.Server.Implementations/IO/LibraryMonitor.cs` offers three methods and only one of
+them is right for an upload.
+
+`ReportFileSystemChangeBeginning` puts a path into `_tempIgnoredPaths`.
+`ReportFileSystemChangeComplete` takes it back out — after `await Task.Delay(45000)`, a
+hard-coded three quarters of a minute, and only *then* optionally reports the change. That
+pair exists for Jellyfin's own metadata writes, where being ignored is the whole point.
+
+Used around an upload it would be exactly backwards: `ReportFileSystemChanged` drops any
+path that is equal to, beneath, or the parent of a temp-ignored entry, so the plugin would
+be suppressing the one file it wants seen. **The plugin calls `ReportFileSystemChanged`
+alone, on the destination, after the rename**, and never brackets anything.
+
+Two more things that method does before queueing, both load-bearing here:
+
+- It runs `IgnorePatterns.ShouldIgnore(path)` first. Reporting the staging file would be a
+  no-op, which is correct but worth knowing: the only useful path to report is the final
+  one.
+- It does **not** consult `LibraryOptions.EnableRealtimeMonitor`. That flag gates
+  `StartWatching` only, so an explicit report works on a library whose real-time
+  monitoring is switched off — which is the common case on a NAS.
+
+## 8. A queued refresh is debounced, and the debounce restarts
+
+`CreateRefresher` either hands the path to an existing `FileRefresher` covering the same
+folder or makes a new one; `FileRefresher.RestartTimer` arms it for
+`ServerConfiguration.LibraryMonitorDelay` seconds, **default 60**
+(`MediaBrowser.Model/Configuration/ServerConfiguration.cs`), and `AddPath` restarts it.
+
+So a 20 000-photo backup produces one scan, roughly a minute after the last upload, not
+20 000 scans. That is the behaviour we want and the reason the `201` returns a key and a
+relative path rather than an item id: **the endpoint cannot truthfully promise
+visibility**, so its response shape does not pretend to.
+
+## 9. The body limit is Kestrel's default, and an attribute is the supported lever
+
+`Jellyfin.Server/Extensions/WebHostBuilderExtensions.cs:SetupJellyfinWebServer` configures
+listeners, HTTPS and the unix socket, and never touches `KestrelServerOptions.Limits`.
+Neither `Jellyfin.Server/Startup.cs` nor `ApiServiceCollectionExtensions` mentions
+`MaxRequestBodySize`, `FormOptions` or a size filter. Kestrel's own 30 MB default therefore
+stands for every endpoint in the server, ours included.
+
+The lever available from inside a plugin action is an ordinary MVC filter, and core uses
+the same one in the other direction: `Jellyfin.Api/Controllers/ClientLogController.cs`
+carries `[RequestSizeLimit(MaxDocumentSize)]` to *lower* it to 1 MB.
+
+We raise it to **4 GiB, declared rather than removed**. `[DisableRequestSizeLimit]` would
+let one authenticated request stream without bound onto the host; a number can be quoted
+in a bug report.
+
+## 10. Re-read for the staging directory, and confirmed
+
+`IgnorePatterns.cs` lists `"**/.*"` under *Unix hidden files* — and spells out
+`"**/.actors"` **and** `"**/.actors/**"` for every hidden directory it means to exclude
+wholesale, which is the proof that the glob only matches the final segment. A dot-prefixed
+directory alone says nothing about the files inside it.
+
+`DotIgnoreIgnoreRule.IsIgnored` walks `FindIgnoreFile` up the ancestors from any entry and,
+on the **file** branch as much as the directory branch, returns true when the content is
+blank: `if (string.IsNullOrWhiteSpace(ignoreFileString)) { return true; }`.
+
+Hence `.upload-for-jelly/` **and** an empty `.ignore` inside it. Two mechanisms, neither
+depending on the other, and the `.ignore` goes in the staging directory — never at the
+library root, where the same rule would hide the whole library.
+
+## 11. Trap: the configuration page's HTML is served to anyone
+
+A plugin adds a dashboard page by implementing `IHasWebPages`
+(`MediaBrowser.Model/Plugins/IHasWebPages.cs`) and returning a `PluginPageInfo` whose
+`EmbeddedResourcePath` names a resource in the plugin assembly.
+`Jellyfin.Api/Controllers/DashboardController.cs:GetDashboardConfigurationPage` finds the
+page by matching `Name` against `?name=` case-insensitively and streams
+`Assembly.GetManifestResourceStream`.
+
+That action carries **no `[Authorize]` at all**, and neither does
+`BaseJellyfinApiController`. Its sibling `GetConfigurationPages` does
+(`Policies.RequiresElevation`), which is what makes the omission look deliberate rather
+than overlooked. Nor is there a fallback: `AddJellyfinApiAuthorization` sets
+`options.DefaultPolicy` — the policy a bare `[Authorize]` resolves to — and never
+`options.FallbackPolicy`, which is the one that would cover unattributed endpoints. So the
+HTML file is public, to anyone who can reach the server, signed in or not.
+
+Hence the shape of ours: **the page holds no data of its own.** It ships markup and a
+script, nothing else; every fact it displays — library names, host paths, the probe
+verdict, the current allowlist — is fetched at runtime through
+`GET /UploadForJelly/Libraries`, which is `[Authorize(Policy = Policies.RequiresElevation)]`.
+An anonymous reader gets an empty form and a 403 from the fetch.
+
+Two smaller notes on the same path:
+
+- The resource name is `RootNamespace` plus the file's path with separators as dots, which
+  is what `Plugin.GetPages` composes. Verified in the built assembly rather than assumed:
+  `Jellyfin.Plugin.UploadForJelly.Configuration.configPage.html`. A typo here is a 404 on
+  the page and nothing else.
+- `ConfigurationPageInfo`'s `DisplayName` falls back to the plugin's own `Name`, so the
+  dashboard entry reads "Upload for Jelly" without the page declaring it twice.
+
+## 12. Why `Libraries` is the one endpoint that returns a host path
+
+The ground rule is that no absolute server path leaves the plugin. The configuration page
+is the deliberate exception, and it is carved out rather than waived: two libraries can
+share a name, and an administrator about to grant write access to a mount needs to know
+*which* mount. That is exactly the decision the path informs.
+
+It is contained three ways. The endpoint requires elevation. The response uses its own DTO,
+`LibraryInfo`, rather than extra nullable fields on the caller-facing `TargetInfo`, so a
+later change to the latter cannot start leaking one. And the page renders every
+server-supplied string through `textContent`; the only value ever assigned to `innerHTML` is
+a static `<input is="emby-checkbox">` literal, present so the custom element upgrades on
+parse.
+
+`ForAdministrator` also ignores the allowlist on purpose — the page's whole job is to show
+what *could* be opted in — and probes every candidate, including the ones already ticked.
+A mount that went read-only since it was ticked should say so before the next upload fails.
+
+## 13. Trap: `ILibraryManager.RootFolder` is not where the libraries are
+
+`LibraryManager.RootFolder` is an **`AggregateFolder`** over the physical media roots.
+`GetUserRootFolder()` is a **`UserRootFolder`** rooted at
+`ApplicationPaths.DefaultUserViewsPath`, and *its* children are the `CollectionFolder`
+objects — one per library. The two are different trees, and only the second one has the
+type every check in this plugin keys off.
+
+The first version of `ForAdministrator` walked `RootFolder.Children`, filtered on
+`is ICollectionFolder`, and returned an empty list on a server that plainly has a photo
+library. **Nothing failed**: the endpoint answered `200 []` and the page correctly rendered
+its "no photo or home-video library was found" message, which is the one sentence that
+looks like a finding rather than a bug.
+
+Core's own answer to the same question is
+`LibraryManager.GetVirtualFolders`: `var topLibraryFolders = GetUserRootFolder().Children`.
+That is the enumeration behind the dashboard's library list, and now behind ours.
+
+`Children`, not `GetChildren(user, true)` — the administrator is configuring libraries,
+not browsing them, and may not hold view permission on every one. That is the deliberate
+difference from `ForUser`, where the user-scoped enumeration *is* half the access rule (§3).

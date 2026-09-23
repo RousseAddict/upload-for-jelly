@@ -1,0 +1,21 @@
+# Build output
+bin/
+obj/
+artifacts/
+*.user
+*.suo
+
+# Plugin packaging
+*.zip
+*.nupkg
+
+# Spike scratch.
+scratch/
+
+# Machine names for tools/build.sh. Nobody else's business; see build.env.example.
+tools/build.env
+
+# Editor / OS
+.vs/
+.idea/
+.DS_Store

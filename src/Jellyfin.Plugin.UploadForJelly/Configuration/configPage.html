@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <title>Upload for Jelly</title>
+</head>
+<body>
+<div id="uploadForJellyPage" data-role="page" class="page type-interior pluginConfigurationPage"
+     data-require="emby-input,emby-button,emby-checkbox">
+    <div data-role="content">
+        <div class="content-primary">
+            <form id="uploadForJellyForm">
+                <h2>Libraries allowed to receive uploads</h2>
+                <p class="fieldDescription">
+                    None is ticked by default. Installing this plugin does not, by itself,
+                    let anyone write to your server: a library accepts photos only once you
+                    tick it here.
+                </p>
+                <p class="fieldDescription">
+                    Each library below was just tested by creating and deleting a file in
+                    it, because filesystem permissions are unrelated to Jellyfin's own.
+                </p>
+
+                <div id="uploadForJellyLibraries"></div>
+
+                <br />
+                <div>
+                    <button is="emby-button" type="submit" class="raised button-submit block">
+                        <span>Save</span>
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script type="text/javascript">
+        (function () {
+            var pluginId = 'f85a21b6-831f-41be-bc52-0831f45355ab';
+
+            var reasons = {
+                READ_ONLY_MOUNT: 'Read-only mount',
+                PERMISSION_DENIED: 'Permission denied',
+                PATH_MISSING: 'Folder not found',
+                WRITE_FAILED: 'Write failed'
+            };
+
+            // The allowlist accepts an id typed with or without dashes, since an
+            // administrator may have pasted one out of a dashboard URL. Compare on the
+            // normalised form or a hand-edited configuration would silently show as
+            // unticked and be wiped on the next save.
+            function normalise(id) {
+                return String(id).replace(/-/g, '').toLowerCase();
+            }
+
+            function describe(library) {
+                if (library.writable) {
+                    return library.path;
+                }
+
+                var reason = reasons[library.reason] || library.reason || 'Not writable';
+                return library.path ? reason + ' \u2014 ' + library.path : reason;
+            }
+
+            function row(library, allowed) {
+                var item = document.createElement('div');
+
+                var label = document.createElement('label');
+                label.className = 'checkboxContainer';
+                // Static markup only, so that the custom element upgrades on parse. No
+                // value from the server is ever assigned through innerHTML.
+                label.innerHTML = '<input is="emby-checkbox" type="checkbox" />';
+
+                var input = label.querySelector('input');
+                input.setAttribute('data-library-id', library.id);
+                input.checked = allowed.indexOf(normalise(library.id)) !== -1;
+
+                var name = document.createElement('span');
+                name.textContent = library.name;
+                label.appendChild(name);
+
+                var detail = document.createElement('div');
+                detail.className = 'fieldDescription';
+                detail.style.marginLeft = '3.25em';
+                detail.textContent = describe(library);
+                if (!library.writable) {
+                    detail.style.color = '#cc3333';
+                }
+
+                item.appendChild(label);
+                item.appendChild(detail);
+                return item;
+            }
+
+            function render(config, libraries) {
+                var container = document.querySelector('#uploadForJellyLibraries');
+                container.innerHTML = '';
+
+                if (!libraries.length) {
+                    var empty = document.createElement('p');
+                    empty.className = 'fieldDescription';
+                    empty.textContent = 'No photo or home-video library was found on this server.';
+                    container.appendChild(empty);
+                    return;
+                }
+
+                var allowed = (config.AllowedLibraryIds || []).map(normalise);
+                libraries.forEach(function (library) {
+                    container.appendChild(row(library, allowed));
+                });
+            }
+
+            function load(page) {
+                Dashboard.showLoadingMsg();
+
+                Promise.all([
+                    ApiClient.getPluginConfiguration(pluginId),
+                    ApiClient.getJSON(ApiClient.getUrl('UploadForJelly/Libraries'))
+                ]).then(function (results) {
+                    render(results[0], results[1]);
+                    Dashboard.hideLoadingMsg();
+                }, function () {
+                    Dashboard.hideLoadingMsg();
+                    Dashboard.alert('Could not read the libraries from the server.');
+                });
+            }
+
+            function save() {
+                Dashboard.showLoadingMsg();
+
+                // Read, modify, write: the whole configuration object goes back, so a
+                // setting this page does not know about is not erased by saving here.
+                ApiClient.getPluginConfiguration(pluginId).then(function (config) {
+                    var ticked = document.querySelectorAll('#uploadForJellyLibraries input[type="checkbox"]');
+                    var ids = [];
+
+                    Array.prototype.forEach.call(ticked, function (input) {
+                        if (input.checked) {
+                            ids.push(input.getAttribute('data-library-id'));
+                        }
+                    });
+
+                    config.AllowedLibraryIds = ids;
+
+                    ApiClient.updatePluginConfiguration(pluginId, config).then(function (result) {
+                        Dashboard.processPluginConfigurationUpdateResult(result);
+                    });
+                });
+            }
+
+            var page = document.querySelector('#uploadForJellyPage');
+
+            page.addEventListener('pageshow', function () {
+                load(page);
+            });
+
+            page.querySelector('#uploadForJellyForm').addEventListener('submit', function (e) {
+                e.preventDefault();
+                save();
+                return false;
+            });
+        })();
+    </script>
+</div>
+</body>
+</html>

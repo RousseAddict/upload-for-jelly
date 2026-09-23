@@ -1,0 +1,11 @@
+[
+  {
+    "guid": "f85a21b6-831f-41be-bc52-0831f45355ab",
+    "name": "Upload for Jelly",
+    "description": "Accepts photo uploads from a client and files them into a photo library.",
+    "overview": "Photo upload endpoint for photo libraries.",
+    "owner": "jf",
+    "category": "General",
+    "versions": []
+  }
+]
