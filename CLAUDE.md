@@ -145,6 +145,13 @@ One finding, `docs/02` §11–§12, and it decided the design:
   requires elevation. Baking the libraries into the page — the obvious implementation —
   would have published the host's directory layout to anonymous callers.
 
+**U6 (a date for files that carry none) is written, not yet measured.** A metadata
+provider, `NameDateProvider`, gives a `Photo` the date leading the name this plugin wrote
+when nothing inside the file supplied one — a WhatsApp JPEG carries no EXIF at all. It runs
+after every provider that reads the file (`IHasOrder`, 100 against their default 50) and
+touches only a null `PremiereDate`. Contract change in `../jellypic/docs/11` §8; sources in
+`docs/02` §17.
+
 Milestones and what each is meant to prove are in `docs/01-plan.md`.
 
 Server: Jellyfin **10.11.6** under podman, amd64.

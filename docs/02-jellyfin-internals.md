@@ -366,3 +366,53 @@ item-terminal, which is what a body that will not arrive actually is. The orderi
 entire fix, and nothing warns about getting it wrong — the base type is reached through an
 exception *filter*, not a type match, so the compiler does not see a derived-after-base
 `catch` chain to complain about.
+
+## 17. A custom metadata provider: when it runs, in what order, and what it may overwrite
+
+Read for U6 (`docs/01` §3e), v10.11.6.
+
+**Order.** `MediaBrowser.Providers/Manager/ProviderManager.cs:GetMetadataProvidersInternal`
+sorts local providers by the library's reader order and remote ones by the fetcher order;
+everything else — every `ICustomMetadataProvider` — gets `int.MaxValue`, then
+`ThenBy(GetDefaultOrder)`. `GetDefaultOrder` returns `IHasOrder.Order` when the provider
+implements it (`MediaBrowser.Controller/Providers/IHasOrder.cs`), else **50**. Neither
+`Emby.Photos/PhotoProvider.cs:PhotoProvider` nor `heic-for-jelly`'s `HeicMetadataProvider`
+implements `IHasOrder`, so both sit at 50 and a provider declaring `Order = 100` runs after
+them. `MediaBrowser.Providers/Manager/MetadataService.cs:RefreshWithProviders` then runs the
+custom providers in that list order (`RunCustomProvider`).
+
+**What `PhotoProvider` does to the date.** `PhotoProvider.FetchAsync`, inside the
+`_includeExtensions` gate (`.jpg .jpeg .png .tiff .cr2 .webp .avif`) and the TagLib `try`:
+
+```
+var dateTaken = image.ImageTag.DateTime;
+if (dateTaken.HasValue) { DateCreated = …ToUniversalTime(); PremiereDate = …; ProductionYear = …; }
+```
+
+It sets the date only when it finds one and **never clears it**: a JFIF-only JPEG reaches
+the block with `DateTime == null` and leaves `PremiereDate` as it was; a HEIC renamed `.jpg`
+throws inside TagLib and is caught. `heic-for-jelly` has the same shape. So a provider that
+runs last and fills only a null `PremiereDate` cannot be overwritten in the same refresh,
+and cannot overwrite a real date.
+
+**What a refresh resets first.** `MediaBrowser.Controller/Entities/BaseItem.cs:BeforeMetadataRefresh`
+clears `_sortName` and back-fills an empty `Name`; it does not touch dates. With no local or
+remote provider for `Photo`, `RefreshWithProviders` performs no `MergeData` before the custom
+providers, so a date set by an earlier refresh is still there when they run.
+
+**When providers run at all.** `MetadataService.GetProviders`:
+
+```
+runAllProviders = ReplaceAllMetadata || mode == FullRefresh
+               || (isFirstRefresh && mode >= Default) || (requiresRefresh && mode >= Default)
+```
+
+and otherwise only providers whose `IHasItemChangeMonitor.HasChanged` says the file changed.
+So a new upload gets the provider on its first refresh, and an existing item needs an
+explicit one. `Jellyfin.Api/Controllers/ItemRefreshController.cs:RefreshItem` with
+`metadataRefreshMode=FullRefresh` is enough — `replaceAllMetadata` is not needed, and the
+`ForceSave` it sets for `FullRefresh` makes the result persist.
+
+**Locked items.** `ProviderManager.CanRefreshMetadata` skips every non-local provider on an
+`IsLocked` item unless it is an `IForcedProvider`. `PhotoProvider` is one; so is U6's, for
+the same reason.

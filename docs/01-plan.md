@@ -74,6 +74,12 @@ no-database design rests on that shape being cheap.
 uploads of the same hash, zero-byte and truncated bodies, path-traversal attempts in
 every client-supplied field.
 
+**U6 — a date for files that carry none.** Planned 2026-11-11, independent of U5. A
+metadata provider that gives a `Photo` the date in the name this plugin wrote, when
+nothing inside the file supplied one. No endpoint, no database, no client change: the
+date already travels as `capturedAt` and already leads the file name. Design and the
+sources behind it in §3e; contract change in `../jellypic/docs/11` §8.
+
 ## 3. What the sources said before U2
 
 All five questions are answered in `docs/02-jellyfin-internals.md`, with citations. The
@@ -135,6 +141,96 @@ because no endpoint had a body until now:
   `ValidationProblemDetails`; anything that does deserialize reaches the action and gets
   `{"code":"BAD_REQUEST"}`. The status is the part the error taxonomy keys off, so this is
   survivable, but it is the one place the wire shape is not ours.
+
+## 3e. U6 — a date for files that carry none (built 2026-11-12, not yet measured on the server)
+
+### The problem, measured on the server
+
+Seven JPEGs filed into `2026/2026-08/` on 2026-11-11 hold a JFIF header and image data,
+nothing else: no EXIF, no XMP, no ICC profile, no comment — a marker walk of two of them
+finds `APP0 JFIF`, `DQT`, `SOF2`, `DHT`, `SOS` and stops. They are WhatsApp's 1600 × 1200
+recompressions. Two more in `2026-10/` and a screenshot PNG in `2026-09/` are the same
+case. With no date to read, Jellyfin leaves `PremiereDate` null; jellypic then falls back
+on `DateCreated` (`PhotoDTO.captureDate = premiereDate ?? dateCreated`), which is the scan
+— `2026-11-12 02:2x` UTC, the evening of the 11th locally. August photos show on
+11 November.
+
+The right date was never lost. The phone's `PHAsset.creationDate` travelled as
+`capturedAt`, chose the folder, and leads the name: `20260801-162429_iphone14-3_…jpg`.
+Jellyfin does not read names.
+
+### The design
+
+One class, `NameDateProvider : ICustomMetadataProvider<Photo>, IForcedProvider,
+IHasItemChangeMonitor, IHasOrder`. Discovered like `heic-for-jelly`'s provider, with no
+registration.
+
+- **`Order = 100`, so it runs after every provider that reads the file.**
+  `PhotoProvider` and `HeicMetadataProvider` declare no order and sort at the default 50
+  (`docs/02` §17). That makes the rule deterministic instead of order-tolerant.
+- **It acts only if `item.PremiereDate` is still null at its turn.** A date inside the
+  file always wins, and `PhotoProvider` never clears a date it did not find (§17), so
+  nothing upstream can undo the provider's work either.
+- **It acts only on a name this plugin writes**: `yyyyMMdd-HHmmss_<slug>_<16 hex>.<ext>`.
+  The parse lives in `UploadWriter`, beside the line that builds the name, and shares the
+  format string and `ShortHash` with it — the same one-function-two-directions rule as
+  `Bucket` and `ShortHash` (U4). A second copy of the format would drift and the drift
+  would be silent: every photo quietly undated again.
+- **It sets what `PhotoProvider` sets, the way it sets it**: `PremiereDate` = the name's
+  date, `Kind = Unspecified` (the wall clock — what `capturedAt` already is once its
+  offset is dropped); `DateCreated` = that `.ToUniversalTime()`; `ProductionYear`.
+  Returns `MetadataImport`, or `None` when it did nothing.
+- **`IForcedProvider` and `HasChanged` copied from `PhotoProvider`**, so a locked item
+  and a changed file behave as they do for the EXIF date.
+- **Not gated on the allowlist.** The allowlist governs writes. Un-ticking a library must
+  not un-date its photos at the next refresh, and the 16-hex tail is the discriminator; a
+  hand-named file matching it exactly carries its date in its name too.
+- **`Photo` only.** The app does not back up videos (jellypic doc 12 §14), and ffprobe
+  reads a video's own date.
+
+### What the date means
+
+The phone's `creationDate`: for a camera photo the shot, where the EXIF date wins anyway;
+for a photo another app saved, the moment it did — for WhatsApp roughly when the photo
+was received, not when it was taken. Better than the upload day, not a capture date. The
+contract says so.
+
+### Existing items: deleted and sent again, not refreshed
+
+A scan does not re-run providers (`docs/02` §17), so the ten files already on the server
+would need an explicit `FullRefresh`. Decided 2026-11-12: they are deleted and sent again
+from the phone after the deploy instead. A new upload gets the provider on its first
+refresh, so that is also the end-to-end test.
+
+Had they been kept, the way would have been a `FullRefresh` **without**
+`replaceAllMetadata` on the `2026` folder only — the whole library re-reads every file,
+and last time that surfaced 184 unrelated TagLib errors on old PNGs (`heic-for-jelly`
+docs/02 §5b). The app would have needed nothing: a refreshed item gets a new
+`DateLastSaved`, jellypic's catch-up (doc 06 §5.4) re-fetches it, and `upsert` recomputes
+`captureDate` and `monthKey`.
+
+### Side effects and limits
+
+- The two HEICs stored under `.jpg` before jellypic `e732c0f` get their date this way too
+  (the name's date equals their EXIF date). Their thumbnails still need the rename.
+- A file in `undated/` has no date in its name and stays undated.
+- The ~1 375 undated files of the pre-existing library are not this plugin's: untouched,
+  including the 84 that fall back to 1970-01-01.
+
+### Release and tests
+
+No release: the plugin has never been published (no tag, empty catalogue) and the server
+runs a `tools/build.sh --deploy` build, whose folder name carries the script's `VERSION`.
+Bumping the version alone would install a second folder beside the first, so it stays at
+0.1.0.0 until U5 cuts a real release. Deploy, then a manual restart. On the real server:
+
+1. Upload a JPEG without EXIF from the app: the item's `PremiereDate` is the name's date,
+   and the photo sits on that day in jellypic.
+2. Upload a HEIC: its `PremiereDate` is still the EXIF one.
+3. Delete the ten dateless files and send them again: the seven August JPEGs land in
+   August in jellypic, the two October ones and the PNG on their own days.
+4. A file of the old library with no date stays undated; a file in `undated/` too.
+5. The server log shows the plugin loading with no warning.
 
 ## 4. Risks
 

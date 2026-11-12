@@ -29,6 +29,10 @@ internal sealed class UploadWriter
 
     private const string UndatedDirectory = "undated";
 
+    // The capture date that leads every dated name. Written by WriteAsync and read back by
+    // NameDate: one constant, so the two directions cannot disagree about it.
+    private const string NameDateFormat = "yyyyMMdd-HHmmss";
+
     private const int BufferSize = 81920;
 
     // A write failed and the volume has under a mebibyte left: that is an inference worth
@@ -191,6 +195,39 @@ internal sealed class UploadWriter
         return missing;
     }
 
+    // The capture date leading a name this plugin wrote, or null for any other name -
+    // including the undated bucket's, which has no date to lead with. Read back with the
+    // format the name was written with and the hash parse Have uses, for the reason Bucket
+    // and ShortHash are shared: a second copy of the format would drift, and the drift would
+    // leave every photo without a date of its own undated again, with nothing to notice.
+    internal static DateTime? NameDate(string path)
+    {
+        if (ShortHash(path) is null)
+        {
+            return null;
+        }
+
+        var stem = Path.GetFileNameWithoutExtension(path.AsSpan());
+
+        // The date, "_", a slug of at least one character, "_", sixteen hex. Anything shorter
+        // is an undated name whose slug merely happens to look like a date.
+        if (stem.Length < NameDateFormat.Length + 2 + 17 || stem[NameDateFormat.Length] != '_')
+        {
+            return null;
+        }
+
+        // DateTimeStyles.None keeps Kind Unspecified: the wall clock the phone reported, with
+        // the zone already dropped by CapturedAt, as an EXIF date is.
+        return DateTime.TryParseExact(
+            stem[..NameDateFormat.Length],
+            NameDateFormat,
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.None,
+            out var date)
+            ? date
+            : null;
+    }
+
     internal async Task<(int Status, UploadResult? Result, string? Code)> WriteAsync(
         string root,
         Stream body,
@@ -216,7 +253,7 @@ internal sealed class UploadWriter
 
         var name = capturedAt is null
             ? string.Create(CultureInfo.InvariantCulture, $"{deviceSlug}_{shortHash}.{extension}")
-            : string.Create(CultureInfo.InvariantCulture, $"{capturedAt.Value:yyyyMMdd-HHmmss}_{deviceSlug}_{shortHash}.{extension}");
+            : string.Create(CultureInfo.InvariantCulture, $"{capturedAt.Value.ToString(NameDateFormat, CultureInfo.InvariantCulture)}_{deviceSlug}_{shortHash}.{extension}");
 
         var destination = Path.Combine(directory, name);
         var staging = Path.Combine(root, StagingDirectory);
