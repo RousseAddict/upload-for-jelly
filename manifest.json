@@ -6,6 +6,15 @@
     "overview": "Photo upload endpoint for photo libraries.",
     "owner": "jf",
     "category": "General",
-    "versions": []
+    "versions": [
+      {
+        "version": "0.2.0.0",
+        "changelog": "First published release. Uploads go only into a library an administrator ticks on the plugin's page; none is open by default. Targets lists where the caller may write, Have answers which photos the server is missing, and Items streams a photo in, verifies its hash and files it under its capture month. A photo with no date inside the file takes the date from the name the plugin gave it. Requires Jellyfin 10.11.6. The endpoints may still change before 1.0.0.0.",
+        "targetAbi": "10.11.6.0",
+        "sourceUrl": "https://github.com/RousseAddict/upload-for-jelly/releases/download/v0.2.0.0/upload-for-jelly_0.2.0.0.zip",
+        "checksum": "3395a6395e12b22b29e165d51acad34b",
+        "timestamp": "2026-11-12T23:00:20Z"
+      }
+    ]
   }
 ]
