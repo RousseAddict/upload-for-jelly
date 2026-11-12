@@ -72,7 +72,8 @@ no-database design rests on that shape being cheap.
 **U5 — hardening, and only then 1.0.0.0.** The error taxonomy exercised end to end
 (read-only mount, full disk, hash mismatch, oversize body, unknown target), concurrent
 uploads of the same hash, zero-byte and truncated bodies, path-traversal attempts in
-every client-supplied field.
+every client-supplied field. 0.x releases go out before it, starting with 0.2.0.0; the
+1.0.0.0 that says the endpoints have stopped moving waits for it.
 
 **U6 — a date for files that carry none.** Planned 2026-11-11, independent of U5. A
 metadata provider that gives a `Photo` the date in the name this plugin wrote, when
@@ -219,10 +220,12 @@ docs/02 §5b). The app would have needed nothing: a refreshed item gets a new
 
 ### Release and tests
 
-No release: the plugin has never been published (no tag, empty catalogue) and the server
-runs a `tools/build.sh --deploy` build, whose folder name carries the script's `VERSION`.
-Bumping the version alone would install a second folder beside the first, so it stays at
-0.1.0.0 until U5 cuts a real release. Deploy, then a manual restart. On the real server:
+Released as 0.2.0.0, decided 2026-11-12, ahead of U5. The reason for waiting, that a
+bumped `tools/build.sh --deploy` would install a second folder beside the first, does not
+hold: the server deletes the older folder at startup (`docs/02` §18). The script now reads
+its version from meta.json and deploys into the folder a catalogue install uses, because
+two folders of the *same* version are the real trap. Deploy, then a manual restart. On the
+real server:
 
 1. Upload a JPEG without EXIF from the app: the item's `PremiereDate` is the name's date,
    and the photo sits on that day in jellypic.

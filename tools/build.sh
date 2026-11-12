@@ -32,7 +32,11 @@ JELLYFIN_PLUGINS=${JELLYFIN_PLUGINS:-'~/Documents/jellyfin/config/plugins'}
 : "${BUILD_HOST:?set BUILD_HOST (user@host of a machine with .NET 9) — see tools/build.env.example}"
 
 PLUGIN=Jellyfin.Plugin.UploadForJelly
-VERSION=0.1.0.0
+META="$repo/src/$PLUGIN/meta.json"
+# Read, not repeated: meta.json is the one file a release edits, and a copy here
+# would name the deploy folder after a version the server is not loading.
+NAME=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["name"])' "$META")
+VERSION=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["version"])' "$META")
 PROJ="src/$PLUGIN/$PLUGIN.csproj"
 OUT="src/$PLUGIN/bin/Release/net9.0/$PLUGIN.dll"
 
@@ -54,8 +58,13 @@ cd $BUILD_DIR && dotnet build '$PROJ' -c Release"
 
 : "${JELLYFIN_HOST:?set JELLYFIN_HOST (user@host running Jellyfin) — see tools/build.env.example}"
 
-# Jellyfin discovers plugins by folder, and the folder name carries the version.
-target="$JELLYFIN_PLUGINS/UploadForJelly_$VERSION"
+# The folder a catalogue install of this version uses, "<name>_<version>", so that the
+# two overwrite each other. Under any other name they tie on version, and at startup
+# the server keeps one and deletes the other in no defined order: a fresh build that
+# silently does not load, behind a log line naming the right version. docs/02 §18.
+# The name has spaces, so it is quoted for the remote shell; JELLYFIN_PLUGINS is not,
+# so that its ~ still expands there.
+target="$JELLYFIN_PLUGINS/'${NAME}_$VERSION'"
 
 echo "==> deploy to $JELLYFIN_HOST:$target"
 ssh "$JELLYFIN_HOST" "mkdir -p $target"

@@ -179,10 +179,17 @@ Two invariants it guards, both learned from the official plugin template:
   `InstallationManager.InstallPackageInternal` extracts it straight into the plugin
   folder, after checking the zip's **MD5** against the manifest's `checksum`.
 
+`tools/build.sh` reads its version from meta.json, so it is not a fourth place to bump,
+and deploys into `Upload for Jelly_<version>`, the folder a catalogue install uses. Two
+folders of the same version tie, and the server deletes one at startup in no defined
+order, which can be the build just deployed (`docs/02` §18).
+
 `targetAbi` stays at the exact version the plugin was built and tested against.
 Jellyfin drops any entry whose `targetAbi` exceeds the running server
 (`InstallationManager.GetPackages`), so lowering it to widen reach would publish a
 claim nobody has verified.
+
+**0.2.0.0 is the first release in the catalogue**, cut 2026-11-12, ahead of U5.
 
 **Version starts at 0.x on purpose.** The app's own endpoint probe treats a 2xx that
 does not decode as "update the plugin", so the contract's shape is allowed to move

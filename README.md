@@ -3,7 +3,8 @@
 A Jellyfin server plugin that lets a client upload photos into a photo library, and
 files them where the library scanner will find them.
 
-**Status: skeleton.** The server loads it; no endpoint is served yet.
+**Status: 0.x.** The endpoints below are served and in use. Their shapes may still change
+before 1.0.0.0, and `Have` has not yet been measured at library scale.
 
 ## Why it exists
 
@@ -16,7 +17,7 @@ So a photo-backup client has to either require WebDAV, or SMB, or a NAS-specific
 that is, ask every user what their box happens to run — or get one endpoint that is the
 same everywhere. This plugin is that endpoint.
 
-## What it will do
+## What it does
 
 - `GET /UploadForJelly/Targets` — which libraries accept uploads, and whether the
   filesystem really lets us write there. The probe creates and deletes a file in the
@@ -28,6 +29,8 @@ same everywhere. This plugin is that endpoint.
 - `POST /UploadForJelly/Items` — raw bytes, streamed to a hidden staging directory
   inside the library root, hashed in the same pass, verified, then moved into place with
   an atomic rename.
+- A photo with no date inside the file, such as a WhatsApp JPEG, takes the date from the
+  name the plugin gave it when it was uploaded.
 
 The full specification, including the on-disk layout, the error taxonomy and why
 filenames carry 16 hex characters of the hash rather than 8, is
@@ -61,13 +64,17 @@ https://raw.githubusercontent.com/RousseAddict/upload-for-jelly/main/manifest.js
 The plugin then appears under Catalogue → General. Install it and restart the server.
 Updates arrive the same way.
 
+Then open Plugins → Upload for Jelly and tick the library uploads may go into. Until one
+is ticked, nothing accepts a write.
+
 Jellyfin hides any plugin whose `targetAbi` is above the server's own version, so an
 empty catalogue means the server is older than the requirement above.
 
 ### From source
 
 Build the DLL, then drop it with `meta.json` into
-`<config>/plugins/UploadForJelly_<version>/` and restart the server.
+`<config>/plugins/Upload for Jelly_<version>/` and restart the server. That is the folder
+a catalogue install uses, so the two replace each other rather than competing.
 
 `tools/build.sh` does this for a setup where compilation happens on another machine
 over ssh. Copy `tools/build.env.example` to `tools/build.env` and fill in your hosts:

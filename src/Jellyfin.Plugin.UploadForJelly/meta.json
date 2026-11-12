@@ -5,7 +5,7 @@
   "overview": "Photo upload endpoint for photo libraries.",
   "owner": "jf",
   "category": "General",
-  "version": "0.1.0.0",
+  "version": "0.2.0.0",
   "targetAbi": "10.11.6.0",
-  "changelog": "Skeleton only. The server loads the plugin; no endpoint is served and nothing is written."
+  "changelog": "First published release. Uploads go only into a library an administrator ticks on the plugin's page; none is open by default. Targets lists where the caller may write, Have answers which photos the server is missing, and Items streams a photo in, verifies its hash and files it under its capture month. A photo with no date inside the file takes the date from the name the plugin gave it. Requires Jellyfin 10.11.6. The endpoints may still change before 1.0.0.0."
 }

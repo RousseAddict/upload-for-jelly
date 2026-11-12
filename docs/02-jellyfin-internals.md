@@ -416,3 +416,31 @@ explicit one. `Jellyfin.Api/Controllers/ItemRefreshController.cs:RefreshItem` wi
 **Locked items.** `ProviderManager.CanRefreshMetadata` skips every non-local provider on an
 `IsLocked` item unless it is an `IForcedProvider`. `PhotoProvider` is one; so is U6's, for
 the same reason.
+
+## 18. Plugin folders: where a catalogue install lands, and what startup deletes
+
+Read for the first release (0.2.0.0), v10.11.6.
+
+**Where a catalogue install lands.**
+`Emby.Server.Implementations/Updates/InstallationManager.cs:PerformPackageInstallation`
+builds `Path.Combine(PluginsPath, package.Name) + "_" + package.Version`, deletes that
+folder if it exists, and extracts the zip into it. `package.Name` is the manifest's `name`
+(`GetCompatibleVersions` copies it), which `tools/publish-manifest.py` takes from
+meta.json: `Upload for Jelly_0.2.0.0`, spaces included.
+
+**What startup does with several folders.**
+`Emby.Server.Implementations/Plugins/PluginManager.cs:DiscoverPlugins` reads every folder's
+meta.json (`LoadManifest`; the version that counts is meta.json's, not the folder's), sorts
+with `MediaBrowser.Common/Plugins/LocalPlugin.cs:Compare` (name, then id, then version),
+walks from the newest, keeps the first enabled entry per name, and `Directory.Delete`s every
+other folder of that name, marking it `Deleted` when the delete fails. A newer deploy beside
+an older one is therefore harmless: the older folder is gone after the restart. That is the
+worry that kept the plugin unreleased at 0.1.0.0 (`docs/01` §3e), and it does not hold.
+
+**Trap: two folders with the same version.** `Compare` returns 0 for them, and nothing
+defines which survives: `Directory.EnumerateDirectories` promises no order and `List.Sort`
+no stability. A dev build deployed as `UploadForJelly_0.2.0.0` beside a catalogue install of
+`Upload for Jelly_0.2.0.0` would be deleted at some restarts and not others. Each time, the
+log would show the right name and the right version loading, from the other build.
+`tools/build.sh` deploys into the catalogue's folder name for that reason, so the two
+overwrite each other instead.
