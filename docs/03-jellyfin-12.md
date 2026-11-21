@@ -233,6 +233,12 @@ its catalogue. Both logged `Loaded plugin: Upload for Jelly 0.2.1.0`.
 - **Library items:** the same five, with the same dates, on both versions.
 - **Without a scan:** identical to 0.2.0.0, including §6d, which reproduced on 10.11.6.
 
+**After publishing.** The release workflow's zip matches the manifest's checksum
+(`6d4383f1…`) and holds the dll and `meta.json` at its root. Its dll (`d1ba5f40…`, built by
+the CI rather than locally, hence a different MD5) went through `tools/abicheck` against the
+same three images: **0 unresolved on 12.4 and 10.11.6**, the same 4 on 10.10.7, 25 implementer
+members identical on 10.11.6 and 12.4. `compat.yml` passed on both rows at its first run.
+
 ## 6. Found along the way: the same on both versions, so not Jellyfin 12
 
 None of these is caused or changed by 12. They are recorded because the live test is where
