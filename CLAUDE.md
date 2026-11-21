@@ -228,6 +228,9 @@ Jellyfin 12 installs; the claim that this works lives in the README, backed by `
 `Jellyfin.Controller` is scanned before its row is bumped.
 
 **0.2.0.0 is the first release in the catalogue**, cut 2026-11-12, ahead of U5.
+**0.2.1.0**, cut 2026-11-21, is the first whose changelog claims Jellyfin 12, and fixes the
+two statuses of `docs/03` §6a–b. Its source was checked on 12.4 and 10.11.6 before the tag
+(`docs/03` §5b); the CI-built dll still wants an `abicheck` run once published.
 
 **Version starts at 0.x on purpose.** The app's own endpoint probe treats a 2xx that
 does not decode as "update the plugin", so the contract's shape is allowed to move
