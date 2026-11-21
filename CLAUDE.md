@@ -28,6 +28,8 @@ CLAUDE.md
 manifest.json                the plugin catalogue users subscribe to
 docs/
   01-plan.md                 milestones, what each one proves, risks
+  02-jellyfin-internals.md   verified source facts (v10.11.0, re-verified v12.4)
+  03-jellyfin-12.md          Jellyfin 12: why one binary serves 10.11 and 12, the live test
 src/Jellyfin.Plugin.UploadForJelly/
   Plugin.cs                  identity, configuration ownership, the dashboard page
   PluginConfiguration.cs     the library allowlist, empty by default
@@ -152,13 +154,34 @@ after every provider that reads the file (`IHasOrder`, 100 against their default
 touches only a null `PremiereDate`. Contract change in `../jellypic/docs/11` §8; sources in
 `docs/02` §17.
 
+**Jellyfin 12 is supported by the same binary, checked 2026-11-20.** The published 0.2.0.0
+zip resolves all 431 of its type and member references against the assemblies in the 12.4
+image (0 missing; the same tool finds 10.11's real ABI break on 10.10.7), and installed
+unmodified from the catalogue into throwaway 12.4 and 10.11.6 servers it gave identical
+answers on 43 endpoint checks and on every item the library made of the uploads. Full record
+in `docs/03-jellyfin-12.md`. What will bite again:
+
+- **`targetAbi` is a floor, never a ceiling.** The 10.11.6.0 entry is offered to and loaded
+  by every newer server, tested or not.
+- **Compiling against a new Jellyfin proves nothing about the old binary.** `compat.yml`
+  catches source breaks; `docs/03` §4–§5 is what proves the shipped dll.
+- **Jellyfin 12 switches legacy authorisation off** on upgrade: `X-Emby-Token` and
+  `?api_key=` stop working. The plugin does not care; any client still using them does.
+- **A library empty at its last scan does not see uploads** until the next scan — on both
+  versions (`docs/03` §6c). Two more pre-existing wrong statuses are in §6a–b, for U5.
+
 Milestones and what each is meant to prove are in `docs/01-plan.md`.
 
-Server: Jellyfin **10.11.6** under podman, amd64.
+Server: Jellyfin **10.11.6** under podman, amd64. Test instances are built from an image
+pinned by digest, on a fresh config, published on `127.0.0.1` only, and removed afterwards.
 
 Building: the dev Mac is Big Sur and no supported .NET runs there, so `tools/build.sh`
 rsyncs to a Monterey box and compiles over ssh. `--deploy` installs the dll into
 Jellyfin but never restarts it — a restart cuts playback, so it stays a manual call.
+The build is deterministic: the same source gives the same dll MD5, which is how a
+build-plumbing change can be shown not to touch the shipped binary. The csproj takes
+`JellyfinVersion` and `JellyfinTargetFramework` as a pair (defaults 10.11.6 / net9.0);
+never override `TargetFramework` directly — NuGet restore drops it and fails NU1202.
 
 ## Releasing
 
@@ -187,7 +210,12 @@ order, which can be the build just deployed (`docs/02` §18).
 `targetAbi` stays at the exact version the plugin was built and tested against.
 Jellyfin drops any entry whose `targetAbi` exceeds the running server
 (`InstallationManager.GetPackages`), so lowering it to widen reach would publish a
-claim nobody has verified.
+claim nobody has verified. It never drops one for being lower, so the same entry is what
+Jellyfin 12 installs; the claim that this works lives in the README, backed by `docs/03`.
+
+`.github/workflows/compat.yml` builds the source against every ABI the binary claims —
+10.11.6/net9.0 and 12.4.0/net10.0 — on each push. Its versions are pinned; a new
+`Jellyfin.Controller` is scanned before its row is bumped.
 
 **0.2.0.0 is the first release in the catalogue**, cut 2026-11-12, ahead of U5.
 

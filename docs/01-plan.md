@@ -235,10 +235,30 @@ real server:
 4. A file of the old library with no date stays undated; a file in `undated/` too.
 5. The server log shows the plugin loading with no warning.
 
+## 3f. Jellyfin 12, checked 2026-11-20
+
+§4 named ABI drift first. Jellyfin 12 was its first real test and **it did not
+materialise**: the published 0.2.0.0 zip, built against 10.11.6 on net9.0, resolves every
+one of its 431 type and member references against the 12.4 image, loads on 12.4, and gave
+the same answer as 10.11.6 on all 43 endpoint checks and on every item the library made of
+the uploads. No code changed; the csproj gained a `JellyfinVersion`/`JellyfinTargetFramework`
+pair so that `compat.yml` can compile the same source against 12.4 on every push.
+
+The same test incidentally measured U6 working — a JPEG with no EXIF dated from its name,
+on both versions — but on test instances, so U6 stays "written, not yet measured" until the
+real server shows it.
+
+It also surfaced three behaviours that are the same on both versions and belong to U5
+rather than to 12: `Have` answers an oversize body with 500 instead of 413; an upload larger
+than the free space answers 500 instead of 507 unless the volume was already nearly full; and
+a library that was empty at its last scan does not see uploads until the next scan. Evidence
+and causes in `03-jellyfin-12.md` §6.
+
 ## 4. Risks
 
-**ABI drift.** The plugin pins `Jellyfin.Controller` 10.11.6 and any 10.x minor can
-break it. Same risk as the sibling plugin; nothing retires it.
+**ABI drift.** The plugin pins `Jellyfin.Controller` 10.11.6 and any minor can break it.
+Same risk as the sibling plugin. Jellyfin 12.4 did not (§3f), but each new major has to
+be checked again — `docs/03` §7 says how — and nothing retires the risk.
 
 **A write endpoint is a different risk class from a decoder.** `heic-for-jelly` could
 only ever fail to show a photo. This one can write files into someone's library as any

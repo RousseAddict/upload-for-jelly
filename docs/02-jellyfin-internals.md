@@ -4,6 +4,14 @@ Read in the sources at tag **v10.11.0**, cited `file:symbol`. Nothing here comes
 documentation or search results. Several findings invert the obvious design; the ones
 that would have shipped as silent bugs are marked **trap**.
 
+**Re-verified against `v12.4` on 2026-11-20.** Every section below still holds on
+Jellyfin 12, and the published 0.2.0.0 binary was run against both versions with identical
+results. Two details moved, neither of which changes the code: legacy authorisation
+(`X-Emby-Token`, `?api_key=`) is switched off by a migration — irrelevant to §5, since
+the plugin goes through `IAuthorizationContext` — and the `"**/.*/**"` pattern that
+`v10.11.6` had added to the ignore list is gone again, which makes §10 exact once more.
+Full record in `03-jellyfin-12.md`.
+
 ## 1. A plugin controller is routed, with no prefix
 
 `Emby.Server.Implementations/ApplicationHost.cs:GetApiPluginAssemblies` selects every
@@ -208,6 +216,11 @@ blank: `if (string.IsNullOrWhiteSpace(ignoreFileString)) { return true; }`.
 Hence `.upload-for-jelly/` **and** an empty `.ignore` inside it. Two mechanisms, neither
 depending on the other, and the `.ignore` goes in the staging directory — never at the
 library root, where the same rule would hide the whole library.
+
+Version note: `v10.11.6` briefly added `"**/.*/**"`, which does match inside a hidden
+directory, and `v12.4` removed it. The design never relied on it; on 12 the `.ignore` is
+again the only thing stopping a report on a file inside the staging directory
+(`03-jellyfin-12.md` §1a).
 
 ## 11. Trap: the configuration page's HTML is served to anyone
 

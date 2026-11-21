@@ -48,7 +48,11 @@ filenames carry 16 hex characters of the hash rather than 8, is
 
 ## Requirements
 
-- Jellyfin **10.11.6** (the ABI is pinned; any 10.x minor can break a plugin)
+- Jellyfin **10.11.6 or later, including 12**. One binary serves both: it is compiled
+  against 10.11.6, and the published zip has been run on **10.11.6 and 12.4** with
+  identical results across every endpoint and error code
+  ([docs/03](docs/03-jellyfin-12.md)). A future Jellyfin can still break a plugin, so
+  each new major is tested before it is claimed here.
 - Write access, from the Jellyfin process, to the library you opt in. Many installs
   already have it — `SaveSubtitlesWithMedia` defaults to true — but a `ro=true` mount,
   as Jellyfin's own container documentation suggests, does not.
@@ -68,7 +72,13 @@ Then open Plugins → Upload for Jelly and tick the library uploads may go into.
 is ticked, nothing accepts a write.
 
 Jellyfin hides any plugin whose `targetAbi` is above the server's own version, so an
-empty catalogue means the server is older than the requirement above.
+empty catalogue means the server is older than the requirement above. It never hides
+one for being *older* than the server, which is why the same entry appears on 10.11
+and 12.
+
+Open a library that already holds at least one file, or let it be scanned once after
+the first upload: Jellyfin skips a library folder that was empty at its last scan, and
+uploads into it stay invisible until the next one ([docs/03](docs/03-jellyfin-12.md) §6c).
 
 ### From source
 
@@ -82,6 +92,15 @@ over ssh. Copy `tools/build.env.example` to `tools/build.env` and fill in your h
 ```sh
 sh tools/build.sh              # sync + build
 sh tools/build.sh --deploy     # + install into Jellyfin (never restarts it)
+```
+
+The binary to ship is the default build. To check that the source also compiles
+against a newer server, override the ABI and its framework together — this is what
+`.github/workflows/compat.yml` does on every push:
+
+```sh
+dotnet build src/Jellyfin.Plugin.UploadForJelly -c Release \
+    -p:JellyfinVersion=12.4.0 -p:JellyfinTargetFramework=net10.0
 ```
 
 ## Licence
