@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    A development tool, never shipped: the release builds the plugin's csproj by path, so
+    nothing here reaches the zip. net9.0 like the plugin, and allowed to roll forward to a
+    newer runtime, because the machine that compiles the plugin need not have the .NET 9
+    runtime installed - only an SDK that can target it.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <RollForward>Major</RollForward>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+</Project>
