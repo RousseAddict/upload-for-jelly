@@ -24,7 +24,7 @@ public class UploadError
 
     /// <summary>
     /// Gets the refusal code: BAD_REQUEST, UNKNOWN_TARGET, UNSUPPORTED_TYPE, EMPTY_BODY,
-    /// HASH_MISMATCH, TARGET_NOT_WRITABLE, INSUFFICIENT_STORAGE or WRITE_FAILED.
+    /// HASH_MISMATCH, TOO_LARGE, TARGET_NOT_WRITABLE, INSUFFICIENT_STORAGE or WRITE_FAILED.
     /// </summary>
     [JsonPropertyName("code")]
     public string Code { get; }

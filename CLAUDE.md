@@ -39,6 +39,7 @@ src/Jellyfin.Plugin.UploadForJelly/
 tools/
   build.sh                   sync + build over ssh, --deploy installs
   publish-manifest.py        records a release in manifest.json
+  abicheck/                  resolves a built dll's references against a Jellyfin's assemblies
 ```
 
 ## Ground rules
@@ -168,7 +169,16 @@ in `docs/03-jellyfin-12.md`. What will bite again:
 - **Jellyfin 12 switches legacy authorisation off** on upgrade: `X-Emby-Token` and
   `?api_key=` stop working. The plugin does not care; any client still using them does.
 - **A library empty at its last scan does not see uploads** until the next scan — on both
-  versions (`docs/03` §6c). Two more pre-existing wrong statuses are in §6a–b, for U5.
+  versions (`docs/03` §6c).
+- **On 10.11.6, a new month folder can be missed**: when its parent and a sibling refresh
+  at the same moment, its photos stay invisible until the parent refreshes again or the
+  scheduled scan runs. Reproduced twice, never on 12.4, cause not isolated (`docs/03` §6d).
+  This is production's version.
+
+0.2.1.0 fixes the two wrong statuses the same test found (`docs/03` §6a–b): `Have`'s
+oversize body is 413, not 500, and a write that fills the volume is 507, not 500.
+`tools/abicheck` is the reference checker of `docs/03` §4; run it on every new Jellyfin
+major and on every released dll.
 
 Milestones and what each is meant to prove are in `docs/01-plan.md`.
 

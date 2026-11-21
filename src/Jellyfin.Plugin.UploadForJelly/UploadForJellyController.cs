@@ -25,6 +25,7 @@ namespace Jellyfin.Plugin.UploadForJelly;
 [Authorize]
 [Route("UploadForJelly")]
 [Produces(MediaTypeNames.Application.Json)]
+[RequestBodyErrors]
 public class UploadForJellyController : ControllerBase
 {
     // The contract's cap, enforced rather than trimmed. It bounds the directory listings
@@ -118,6 +119,7 @@ public class UploadForJellyController : ControllerBase
     /// <response code="400">The body is malformed, or carries more than five hundred keys.</response>
     /// <response code="401">No user behind the token.</response>
     /// <response code="404">Unknown target, or one this caller may not upload into.</response>
+    /// <response code="413">Body above 256 KB, refused before it is deserialized.</response>
     /// <returns>The hashes worth uploading.</returns>
     /// <remarks>
     /// There is no index behind this. The hash is in the stored filename and the client
@@ -137,6 +139,7 @@ public class UploadForJellyController : ControllerBase
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status413PayloadTooLarge)]
     public async Task<ActionResult<HaveResponse>> PostHave([FromBody] HaveRequest? request)
     {
         var info = await _authorizationContext.GetAuthorizationInfo(HttpContext).ConfigureAwait(false);

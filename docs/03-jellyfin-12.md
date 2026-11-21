@@ -7,10 +7,13 @@ inside the 12.4 image; and by installing that zip, unmodified, from the catalogu
 throwaway 12.4 and 10.11.6 servers and running the whole contract against both.
 Citations are `file:symbol`.
 
-**Verdict: the published binary already serves both.** No source change, no second
-build, no new release. What follows is why, what was measured, three pre-existing
-behaviours the test surfaced on both versions, and the condition under which one binary
-stops being enough.
+**Verdict: the published binary already serves both.** No source change and no second
+build were needed for Jellyfin 12. What follows is why, what was measured, four
+pre-existing behaviours the test surfaced on both versions, and the condition under which
+one binary stops being enough.
+
+**0.2.1.0**, released afterwards, fixes two of those behaviours (§6a–b) and was put through
+the same three checks before release, with the same outcome (§5b). It is still one binary.
 
 The same question was answered for `heic-for-jelly` the same day
 (`../heic-for-jelly/docs/05-jellyfin-12.md`). This plugin has the larger surface — an MVC
@@ -106,8 +109,8 @@ source-compatible and binary-breaking — 12.4 did exactly that to `BaseItem.Get
 
 ## 4. Every reference, resolved against the 12.4 image
 
-A throwaway tool on `System.Reflection.Metadata` — the BCL's own metadata reader, no
-package — read the published dll's type-reference and member-reference tables and resolved
+`tools/abicheck`, a small tool on `System.Reflection.Metadata` — the BCL's own metadata
+reader, no package — read the published dll's type-reference and member-reference tables and resolved
 each one the way the runtime binds it: by assembly name, following type forwarders, walking
 base types and interfaces, then matching name and decoded signature. The host assemblies were
 copied out of each image's `/jellyfin` directory, so this is what each server actually loads,
@@ -133,6 +136,10 @@ A member added there would have been a `TypeLoadException` here.
 What this does not cover is constants compiled into the dll — `CollectionType.photos` and
 `.homevideos`, `Policies.RequiresElevation` — whose defining files are byte-identical (§2),
 and behaviour, which is §5.
+
+The 0.2.1.0 candidate (§5b), which adds an exception filter, references 156 types and 284
+members: **0 unresolved on 12.4 and on 10.11.6**, the same 4 on 10.10.7, and 25 implementer
+members — the filter's base class adds three — identical on 10.11.6 and 12.4.
 
 ## 5. The live test
 
@@ -180,11 +187,11 @@ server bundles. On 12.4:
 | Read-only mount | 409 `TARGET_NOT_WRITABLE` |
 | `Content-Length: 4 GiB + 1` | 413 `TOO_LARGE` (`docs/02` §16) |
 | 1 MiB into a volume with 512 KiB free | 507 `INSUFFICIENT_STORAGE` |
-| 4 MiB into an *empty* 3 MiB volume | 500 `WRITE_FAILED` — §6b |
+| 4 MiB into an *empty* 3 MiB volume | 500 `WRITE_FAILED` — §6b; 507 from 0.2.1.0 |
 | `Have`: present, missing, undated, 2025-12 keys | exactly the two missing hashes |
 | `Have`: month `2026-13` / 501 keys / null key / unknown target / `outsider` | 400 / 400 / 400 / 404 / 404; 500 keys 200 |
 | `Have`: `TARGETID`/`SHA` casing / malformed JSON | 200 (§14) / 400 `ValidationProblemDetails` (§15) |
-| `Have`: 300 KB body | 500 — §6a |
+| `Have`: 300 KB body | 500 — §6a; 413 `TOO_LARGE` from 0.2.1.0 |
 | `/api-docs/openapi.json` | 200, the four `/UploadForJelly/*` routes |
 
 **What the library made of it — identical on both versions.** After one library scan (§6c
@@ -210,24 +217,49 @@ lost exactly that id. On 10.11.6 the page rendered identically.
 **Logs.** Neither server logged a warning or error from the plugin other than the ones the
 error cases are meant to produce.
 
+### 5b. 0.2.1.0, the same test before release (2026-11-21)
+
+The candidate — the exact source tagged for 0.2.1.0, built locally, dll MD5 `a5adaed9…` —
+was deployed by hand into a fresh pair of servers set up as above, from the same 12.4 image
+(re-pulled by the same digest) and production's 10.11.6 image; `heic-for-jelly` again from
+its catalogue. Both logged `Loaded plugin: Upload for Jelly 0.2.1.0`.
+
+- **Endpoints:** the same 43 checks, identical between the two versions. Against the
+  0.2.0.0 run, exactly two rows changed, the two fixes: `Have` with a 300 KB body now
+  answers **413 `{"code":"TOO_LARGE"}`**, and 4 MiB into an empty 3 MiB volume now answers
+  **507 `INSUFFICIENT_STORAGE`**, the staging directory left with nothing but its `.ignore`.
+  The "Request body too large" error and the "Upload write failed" warning are gone from both
+  logs, because neither case reaches them any more.
+- **Library items:** the same five, with the same dates, on both versions.
+- **Without a scan:** identical to 0.2.0.0, including §6d, which reproduced on 10.11.6.
+
 ## 6. Found along the way: the same on both versions, so not Jellyfin 12
 
-None of these is caused or changed by 12, and none is fixed here. They are recorded because
-the live test is where they showed.
+None of these is caused or changed by 12. They are recorded because the live test is where
+they showed. **a** and **b** are fixed in 0.2.1.0; **c** and **d** are Jellyfin's.
 
-**a. `Have` answers an oversize body with 500, not 413.** `[RequestSizeLimit]` does refuse
+**a. `Have` answered an oversize body with 500, not 413 — fixed in 0.2.1.0.** `[RequestSizeLimit]` does refuse
 the 300 KB body before the heap takes it (`docs/02` §15), but the refusal is a
 `BadHttpRequestException` raised while MVC reads the body, before the action runs — so the
 plugin's own handler (`docs/02` §16) never sees it, and
 `Jellyfin.Api/Middleware/ExceptionMiddleware.cs:GetStatusCode` has no case for it and returns
 500, logged as "Request body too large". 500 is the retryable bucket of the contract. The app
-never sends 300 KB here — 500 keys cost about 50 KB — so this is a wrong status, not a live
-failure.
+never sends 300 KB here — 500 keys cost about 50 KB — so this was a wrong status, not a live
+failure. `RequestBodyErrorsAttribute`, an exception filter on the controller, now maps it the
+way `UploadWriter.WriteAsync` maps the same exception for `Items`: 413 `TOO_LARGE`, or 400
+`BAD_REQUEST` for any other unreadable body. An exception filter is the one plugin-side lever
+that sees an exception from model binding, and unlike `ApiBehaviorOptions` (`docs/02` §15) it
+is local to this controller. Contract §10 already lists `413` as terminal for the item, so the
+contract does not change.
 
-**b. An upload larger than the free space answers 500, not 507.** `UploadWriter.WriteAsync`
-removes the partial file before `Refuse` measures free space, so a volume is only reported
+**b. An upload larger than the free space answered 500, not 507 — fixed in 0.2.1.0.**
+`UploadWriter.WriteAsync` removed the partial file before `Refuse` measured free space, so
+the space the failed write had filled was handed back first and a volume was only reported
 full when it already had under 1 MiB free *before* the upload. A 4 GiB video onto 2 GiB free
-gets `WRITE_FAILED`, retryable, rather than `INSUFFICIENT_STORAGE`.
+got `WRITE_FAILED`, retried with backoff and never reported. The diagnosis now runs first and
+the removal in a `finally`, so the volume is measured as the failed write left it. Contract
+§10's `507` means "disk full", terminal for the queue with a banner — which is what a backup
+that cannot store its next item needs the user to see.
 
 **c. A library that was empty at its last scan does not see uploads until the next one.**
 `Folder.IsLibraryFolderAccessible` skips an empty top-level folder with "Library folder … is
@@ -236,22 +268,25 @@ no "will be refreshed" line was logged, and the files stayed invisible until a s
 administrator who creates a fresh, empty library and opts it in straight away meets exactly
 this, on both versions.
 
-**d. Once on 10.11.6, a new month folder was missed.** Two uploads a second apart, one into
-`2026-09/` and one into a new `2026-11/`, queued two refreshes that ran together — of
-`2026-09` and of its parent `2026`. On 10.11.6 the new folder was not created and its photo
-was still invisible more than four minutes later, until a later upload refreshed `2026` again
-and picked it up;
-12.4 found it first time. Repeated alone, a new month folder appeared after 60 s on both. One
-miss in two attempts is not enough to call it a race or to credit 12.4 with a fix;
-`Folder.ValidateChildrenInternal2` was largely rewritten between the tags and the cause was
-not isolated.
+**d. On 10.11.6, a new month folder is missed when its parent and a sibling refresh
+together.** Two uploads a second apart, one into the existing `2026-09/` and one into a new
+`2026-11/`, queue two refreshes that run at the same moment — of `2026-09` and of its parent
+`2026` (the "will be refreshed" lines carry the same second). On 10.11.6 the new folder is
+not created and its photo stays invisible — still after four minutes — until a later refresh
+of `2026` picks it up. 12.4 finds it within 60 s. A single upload into a new month folder
+appears after 60 s on both. **Reproduced in both runs** (0.2.0.0 and 0.2.1.0): 2 misses out of
+2 on 10.11.6, none on 12.4. `Folder.ValidateChildrenInternal2` was largely rewritten between
+the tags and the cause was not isolated; nothing in the plugin's own report differs between
+the two cases. On production this means a backup that opens a new month may leave its first
+photos of that month invisible until the next refresh of the year folder or the next
+scheduled scan.
 
 ## 7. Releasing, and when this stops being enough
 
-- **The release is unchanged.** One zip, built against 10.11.6 on net9.0, `targetAbi`
+- **The release shape is unchanged.** One zip, built against 10.11.6 on net9.0, `targetAbi`
   10.11.6.0 — the version it is compiled against, per `CLAUDE.md`. The published 0.2.0.0
-  entry says "Requires Jellyfin 10.11.6"; it is not rewritten, and the next release's
-  changelog says 10.11.6 or later, including 12. The README carries the claim meanwhile.
+  entry says "Requires Jellyfin 10.11.6" and is not rewritten; 0.2.1.0's changelog says
+  10.11.6 or later, tested on 12.4.
 - **`.github/workflows/compat.yml`** compiles the same source against
   `Jellyfin.Controller` 12.4.0 on net10.0 at every push; it compiles clean, with no warning
   under `TreatWarningsAsErrors`. It catches source breaks only, for the reason in §3. The
@@ -275,6 +310,11 @@ not isolated.
   `targetAbi`.
 - **Before claiming a new major**, repeat §4 and §5: the binary check takes a minute and is
   what makes the live test's coverage complete, since a missing member in a method the test
-  never reaches would only fail when that method is first compiled.
+  never reaches would only fail when that method is first compiled. `tools/abicheck`'s
+  header says how to get a host directory out of an image; run it against the previous
+  major and a known-incompatible one too, or its zero proves nothing.
+- **After publishing**, the CI-built dll differs from a local build of the same source
+  (different SDK and paths), so run `tools/abicheck` on the released zip's dll as well; it
+  needs no server.
 - **When 10.11 is dropped**, flip the csproj defaults to 12.x/net10.0 and raise `targetAbi`
   with them.

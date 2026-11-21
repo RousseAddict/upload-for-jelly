@@ -37,7 +37,8 @@ internal sealed class UploadWriter
 
     // A write failed and the volume has under a mebibyte left: that is an inference worth
     // making, because the alternative is reading errno out of an IOException, which .NET
-    // does not promise to expose the same way twice.
+    // does not promise to expose the same way twice. It holds only if the volume is measured
+    // as the failed write left it, which is why WriteAsync diagnoses before it cleans up.
     private const long StorageExhausted = 1024 * 1024;
 
     // A write-path guard, not a formality. .nfo and .xml are files Jellyfin *interprets*
@@ -316,8 +317,18 @@ internal sealed class UploadWriter
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            Remove(part);
-            return Refuse(root, ex, destination);
+            // Diagnosed before the cleanup, not after. The partial file is what filled the
+            // volume; removed first, it hands its space back and Refuse measures a volume
+            // that is no longer full - a 4 GiB video onto 2 GiB free then reads as an
+            // unexplained, retryable WRITE_FAILED, retried with backoff and never reported.
+            try
+            {
+                return Refuse(root, ex, destination);
+            }
+            finally
+            {
+                Remove(part);
+            }
         }
         catch (OperationCanceledException)
         {

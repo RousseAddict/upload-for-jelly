@@ -348,6 +348,15 @@ authenticated caller materialise on the order of 200 000 `HaveKey` instances and
 be told `400`. `Have` therefore carries its own `[RequestSizeLimit]` — 256 KB against a real
 cost of about 50 KB — so the refusal happens before the heap does.
 
+That refusal is a `BadHttpRequestException` raised during model binding (§16), before the
+action, and left alone it reaches `Jellyfin.Api/Middleware/ExceptionMiddleware.cs:GetStatusCode`,
+which has no case for it: **500**, the retryable status. Measured on 10.11.6 and 12.4
+(`03-jellyfin-12.md` §6a). Since 0.2.1.0 `RequestBodyErrorsAttribute`, an exception filter on
+the controller, answers it 413 `TOO_LARGE`. That is the lever this section's global
+`ApiBehaviorOptions` is not: an exception filter sees model-binding exceptions and applies
+to this controller only. It does not change the `ValidationProblemDetails` above, which is
+model state, not an exception.
+
 ## 16. `BadHttpRequestException` derives from `IOException`, and `[RequestSizeLimit]` is lazy
 
 Two facts that only bite together, and the pair of them made the contract's `413`
@@ -379,6 +388,12 @@ item-terminal, which is what a body that will not arrive actually is. The orderi
 entire fix, and nothing warns about getting it wrong — the base type is reached through an
 exception *filter*, not a type match, so the compiler does not see a derived-after-base
 `catch` chain to complain about.
+
+A second ordering in the same handler, fixed in 0.2.1.0: the filesystem branch removed the
+partial file and *then* asked `Refuse` whether the volume was full. A partial that had filled
+the volume handed its space back first, so the 1 MiB test only fired on a volume already
+full before the upload, and a file larger than the free space came back `500 WRITE_FAILED`.
+The diagnosis now runs first and the removal in a `finally` (`03-jellyfin-12.md` §6b).
 
 ## 17. A custom metadata provider: when it runs, in what order, and what it may overwrite
 

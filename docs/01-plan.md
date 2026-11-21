@@ -248,11 +248,14 @@ The same test incidentally measured U6 working — a JPEG with no EXIF dated fro
 on both versions — but on test instances, so U6 stays "written, not yet measured" until the
 real server shows it.
 
-It also surfaced three behaviours that are the same on both versions and belong to U5
-rather than to 12: `Have` answers an oversize body with 500 instead of 413; an upload larger
-than the free space answers 500 instead of 507 unless the volume was already nearly full; and
-a library that was empty at its last scan does not see uploads until the next scan. Evidence
-and causes in `03-jellyfin-12.md` §6.
+It also surfaced four behaviours that are the same on both versions, so not 12's. Two were
+the plugin's and are fixed in 0.2.1.0, taken out of U5's list: `Have` answered an oversize
+body with 500 instead of 413, and an upload larger than the free space answered 500 instead
+of 507 unless the volume was already nearly full. Two are Jellyfin's: a library that was empty
+at its last scan does not see uploads until the next scan, and on 10.11.6 a new month folder
+is missed when its parent and a sibling refresh at the same moment — reproduced twice, not on
+12.4. Evidence and causes in `03-jellyfin-12.md` §6; 0.2.1.0 went through the same checks
+before release (§5b there).
 
 ## 4. Risks
 
